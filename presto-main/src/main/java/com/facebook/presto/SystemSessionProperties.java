@@ -74,6 +74,7 @@ public final class SystemSessionProperties
     public static final String PUSH_AGGREGATION_THROUGH_JOIN = "push_aggregation_through_join";
     public static final String PUSH_PARTIAL_AGGREGATION_THROUGH_JOIN = "push_partial_aggregation_through_join";
     public static final String FORCE_SINGLE_NODE_OUTPUT = "force_single_node_output";
+    public static final String ENABLE_THIN_SORT = "enable_thin_sort";
 
     private final List<PropertyMetadata<?>> sessionProperties;
 
@@ -324,6 +325,11 @@ public final class SystemSessionProperties
                         FORCE_SINGLE_NODE_OUTPUT,
                         "Force single node output",
                         featuresConfig.isForceSingleNodeOutput(),
+                        true),
+                booleanSessionProperty(
+                        ENABLE_THIN_SORT,
+                        "Enable thin sort",
+                        featuresConfig.isEnableThinSort(),
                         true));
     }
 
@@ -509,5 +515,10 @@ public final class SystemSessionProperties
     public static boolean isForceSingleNodeOutput(Session session)
     {
         return session.getSystemProperty(FORCE_SINGLE_NODE_OUTPUT, Boolean.class);
+    }
+
+    public static boolean isEnableThinSort(Session session)
+    {
+        return session.getSystemProperty(ENABLE_THIN_SORT, Boolean.class);
     }
 }

@@ -13,8 +13,11 @@
  */
 package com.facebook.presto.util;
 
+import com.google.common.collect.ImmutableSet;
+
 import java.util.Collection;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.BinaryOperator;
 import java.util.stream.Stream;
 
@@ -35,5 +38,86 @@ public final class MoreMaps
                 .map(Map::entrySet)
                 .flatMap(Collection::stream)
                 .collect(toMap(Map.Entry::getKey, Map.Entry::getValue, merger));
+    }
+
+    public static class EmptyMap<K, V>
+            implements Map<K, V>
+    {
+        private final V defaultValue;
+
+        public EmptyMap(V defaultValue)
+        {
+            this.defaultValue = defaultValue;
+        }
+
+        @Override
+        public int size()
+        {
+            return 0;
+        }
+
+        @Override
+        public boolean isEmpty()
+        {
+            return true;
+        }
+
+        @Override
+        public boolean containsKey(Object key)
+        {
+            return false;
+        }
+
+        @Override
+        public boolean containsValue(Object value)
+        {
+            return false;
+        }
+
+        @Override
+        public V get(Object key)
+        {
+            return null;
+        }
+
+        @Override
+        public V put(K key, V value)
+        {
+            return null;
+        }
+
+        @Override
+        public V remove(Object key)
+        {
+            return defaultValue;
+        }
+
+        @Override
+        public void putAll(Map<? extends K, ? extends V> m)
+        {
+        }
+
+        @Override
+        public void clear()
+        {
+        }
+
+        @Override
+        public Set<K> keySet()
+        {
+            return ImmutableSet.of();
+        }
+
+        @Override
+        public Collection<V> values()
+        {
+            return ImmutableSet.of();
+        }
+
+        @Override
+        public Set<Map.Entry<K, V>> entrySet()
+        {
+            return ImmutableSet.of();
+        }
     }
 }

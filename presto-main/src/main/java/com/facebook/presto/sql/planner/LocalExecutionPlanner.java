@@ -184,6 +184,7 @@ import java.util.stream.Collectors;
 import static com.facebook.presto.SystemSessionProperties.getAggregationOperatorUnspillMemoryLimit;
 import static com.facebook.presto.SystemSessionProperties.getTaskConcurrency;
 import static com.facebook.presto.SystemSessionProperties.getTaskWriterCount;
+import static com.facebook.presto.SystemSessionProperties.isEnableThinSort;
 import static com.facebook.presto.SystemSessionProperties.isExchangeCompressionEnabled;
 import static com.facebook.presto.SystemSessionProperties.isSpillEnabled;
 import static com.facebook.presto.metadata.FunctionKind.SCALAR;
@@ -823,7 +824,8 @@ public class LocalExecutionPlanner
                     source.getTypes(),
                     (int) node.getCount(),
                     sortChannels,
-                    sortOrders);
+                    sortOrders,
+                    isEnableThinSort(session));
 
             return new PhysicalOperation(operator, source.getLayout(), source);
         }

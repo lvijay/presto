@@ -19,17 +19,24 @@ import com.facebook.presto.spi.block.Block;
 import com.facebook.presto.spi.block.SortOrder;
 import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.sql.planner.plan.PlanNodeId;
+import com.facebook.presto.util.MoreMaps;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Ordering;
+
 import io.airlift.units.DataSize;
 
+import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.PriorityQueue;
+import java.util.stream.IntStream;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
+
 import static java.util.Objects.requireNonNull;
+import static java.util.stream.Collectors.toList;
 
 /**
  * Returns the top N rows from the source sorted according to the specified ordering in the keyChannelIndex channel.
@@ -47,6 +54,7 @@ public class TopNOperator
         private final List<Type> sortTypes;
         private final List<Integer> sortChannels;
         private final List<SortOrder> sortOrders;
+        private final boolean enableThinSort;
         private boolean closed;
 
         public TopNOperatorFactory(
@@ -55,7 +63,8 @@ public class TopNOperator
                 List<? extends Type> types,
                 int n,
                 List<Integer> sortChannels,
-                List<SortOrder> sortOrders)
+                List<SortOrder> sortOrders,
+                boolean enableThinSort)
         {
             this.operatorId = operatorId;
             this.planNodeId = requireNonNull(planNodeId, "planNodeId is null");
@@ -68,6 +77,7 @@ public class TopNOperator
             this.sortTypes = sortTypes.build();
             this.sortChannels = ImmutableList.copyOf(requireNonNull(sortChannels, "sortChannels is null"));
             this.sortOrders = ImmutableList.copyOf(requireNonNull(sortOrders, "sortOrders is null"));
+            this.enableThinSort = enableThinSort;
         }
 
         @Override
@@ -87,7 +97,8 @@ public class TopNOperator
                     n,
                     sortTypes,
                     sortChannels,
-                    sortOrders);
+                    sortOrders,
+                    enableThinSort);
         }
 
         @Override
@@ -99,7 +110,7 @@ public class TopNOperator
         @Override
         public OperatorFactory duplicate()
         {
-            return new TopNOperatorFactory(operatorId, planNodeId, sourceTypes, n, sortChannels, sortOrders);
+            return new TopNOperatorFactory(operatorId, planNodeId, sourceTypes, n, sortChannels, sortOrders, enableThinSort);
         }
     }
 
@@ -115,6 +126,8 @@ public class TopNOperator
 
     private final PageBuilder pageBuilder;
 
+    private final boolean enableThinSort;
+
     private TopNBuilder topNBuilder;
     private boolean finishing;
 
@@ -126,7 +139,8 @@ public class TopNOperator
             int n,
             List<Type> sortTypes,
             List<Integer> sortChannels,
-            List<SortOrder> sortOrders)
+            List<SortOrder> sortOrders,
+            boolean enableThinSort)
     {
         this.operatorContext = requireNonNull(operatorContext, "operatorContext is null");
         this.types = requireNonNull(types, "types is null");
@@ -139,6 +153,8 @@ public class TopNOperator
         this.sortOrders = requireNonNull(sortOrders, "sortOrders is null");
 
         this.pageBuilder = new PageBuilder(types);
+
+        this.enableThinSort = enableThinSort;
 
         if (n == 0) {
             finishing = true;
@@ -186,7 +202,8 @@ public class TopNOperator
                     sortTypes,
                     sortChannels,
                     sortOrders,
-                    operatorContext);
+                    operatorContext,
+                    enableThinSort);
         }
 
         topNBuilder.processPage(page);
@@ -224,8 +241,12 @@ public class TopNOperator
         private final List<Type> sortTypes;
         private final List<Integer> sortChannels;
         private final List<SortOrder> sortOrders;
+        private final List<Integer> sortIndices;
         private final OperatorContext operatorContext;
         private final PriorityQueue<Block[]> globalCandidates;
+        private final Map<Block[], Block[]> map;
+        private final boolean enableThinSort;
+        private static final Block[] EMPTY = new Block[0];
 
         private long memorySize;
 
@@ -233,17 +254,29 @@ public class TopNOperator
                 List<Type> sortTypes,
                 List<Integer> sortChannels,
                 List<SortOrder> sortOrders,
-                OperatorContext operatorContext)
+                OperatorContext operatorContext,
+                boolean enableThinSort)
         {
             this.n = n;
 
             this.sortTypes = sortTypes;
             this.sortChannels = sortChannels;
             this.sortOrders = sortOrders;
-
             this.operatorContext = operatorContext;
+            this.enableThinSort = enableThinSort;
 
-            Ordering<Block[]> comparator = Ordering.from(new RowComparator(sortTypes, sortChannels, sortOrders)).reverse();
+            if (enableThinSort) {
+                this.sortIndices = IntStream.range(0, sortChannels.size())
+                        .boxed()
+                        .collect(toList());
+                this.map = new IdentityHashMap<>(MAX_INITIAL_PRIORITY_QUEUE_SIZE);
+            }
+            else {
+                this.sortIndices = sortChannels;
+                this.map = new MoreMaps.EmptyMap<>(EMPTY);
+            }
+
+            Ordering<Block[]> comparator = Ordering.from(new RowComparator(sortTypes, sortIndices, sortOrders)).reverse();
             this.globalCandidates = new PriorityQueue<>(Math.min(n, MAX_INITIAL_PRIORITY_QUEUE_SIZE), comparator);
         }
 
@@ -276,7 +309,7 @@ public class TopNOperator
                 SortOrder sortOrder = sortOrders.get(i);
 
                 Block block = blocks[sortChannel];
-                Block currentMaxValue = currentMax[sortChannel];
+                Block currentMaxValue = currentMax[sortIndices.get(i)];
 
                 // compare the right value to the left block but negate the result since we are evaluating in the opposite order
                 int compare = -sortOrder.compareBlockValue(type, currentMaxValue, 0, block, position);
@@ -290,14 +323,28 @@ public class TopNOperator
         private long addRow(int position, Block[] blocks)
         {
             long sizeDelta = 0;
-            Block[] row = getValues(position, blocks);
 
-            sizeDelta += sizeOfRow(row);
-            globalCandidates.add(row);
+            Block[] sortRow;
+            Block[] fullRow;
+            if (this.enableThinSort) {
+                sortRow = getThinValues(position, sortChannels, blocks);
+                fullRow = getValues(position, blocks);
+            }
+            else {
+                sortRow = getValues(position, blocks);
+                fullRow = EMPTY;
+            }
+
+            sizeDelta += sizeOfRow(sortRow);
+            sizeDelta += sizeOfRow(fullRow);
+            globalCandidates.add(sortRow);
+            map.put(sortRow, fullRow);
 
             while (globalCandidates.size() > n) {
                 Block[] previous = globalCandidates.remove();
+                Block[] fullBlock = map.remove(previous);
                 sizeDelta -= sizeOfRow(previous);
+                sizeDelta -= sizeOfRow(fullBlock);
             }
             return sizeDelta;
         }
@@ -311,7 +358,17 @@ public class TopNOperator
             return size;
         }
 
-        private static Block[] getValues(int position, Block[] blocks)
+        private Block[] getThinValues(int position, List<Integer> indices, Block[] blocks)
+        {
+            Block[] row = new Block[indices.size()];
+            for (int i = 0; i < indices.size(); i++) {
+                int blockIdx = indices.get(i).intValue();
+                row[i] = blocks[blockIdx].getSingleValueBlock(position);
+            }
+            return row;
+        }
+
+        private Block[] getValues(int position, Block[] blocks)
         {
             Block[] row = new Block[blocks.length];
             for (int i = 0; i < blocks.length; i++) {
@@ -324,7 +381,8 @@ public class TopNOperator
         {
             ImmutableList.Builder<Block[]> minSortedGlobalCandidates = ImmutableList.builder();
             while (!globalCandidates.isEmpty()) {
-                Block[] row = globalCandidates.remove();
+                Block[] sortRow = globalCandidates.remove();
+                Block[] row = enableThinSort ? map.remove(sortRow) : sortRow;
                 minSortedGlobalCandidates.add(row);
             }
             return minSortedGlobalCandidates.build().reverse().iterator();

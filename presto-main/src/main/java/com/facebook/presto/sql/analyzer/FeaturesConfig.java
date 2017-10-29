@@ -57,6 +57,7 @@ public class FeaturesConfig
     private boolean legacyMapSubscript;
     private boolean optimizeMixedDistinctAggregations;
     private boolean forceSingleNodeOutput;
+    private boolean enableThinSort;
 
     private boolean dictionaryAggregation;
     private boolean resourceGroups;
@@ -469,6 +470,18 @@ public class FeaturesConfig
     public FeaturesConfig setForceSingleNodeOutput(boolean value)
     {
         this.forceSingleNodeOutput = value;
+        return this;
+    }
+
+    public boolean isEnableThinSort()
+    {
+        return enableThinSort;
+    }
+
+    @Config("optimizer.enable-thin-sort")
+    public FeaturesConfig setEnableThinSort(boolean value)
+    {
+        this.enableThinSort = value;
         return this;
     }
 }
